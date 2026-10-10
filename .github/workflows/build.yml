@@ -169,11 +169,14 @@ jobs:
           git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git ak3
           cd ak3
           rm -rf .git .github README.md modules patch ramdisk
-          cp ~/pack/anykernel.sh .
+          # O repositório foi baixado em $GITHUB_WORKSPACE/pack (não em ~/pack)
+          ls -la "$GITHUB_WORKSPACE/pack"
+          cp "$GITHUB_WORKSPACE/pack/anykernel.sh" .
           cp ~/kernel/out/dist/Image .
-          zip -r9 ~/notwistedSU-klee-6.6.89.zip . -x "*.git*"
+          zip -r9 "$GITHUB_WORKSPACE/notwistedSU-klee-6.6.89.zip" . -x "*.git*"
+          ls -lh "$GITHUB_WORKSPACE/notwistedSU-klee-6.6.89.zip"
 
       - uses: actions/upload-artifact@v4
         with:
           name: notwistedSU-klee
-          path: ~/notwistedSU-klee-6.6.89.zip
+          path: ${{ github.workspace }}/notwistedSU-klee-6.6.89.zip
