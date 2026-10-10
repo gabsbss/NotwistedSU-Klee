@@ -148,12 +148,20 @@ jobs:
           # --lto=thin: usa menos memória
           # --notrim: não remove símbolos "não listados" (ajuda os módulos de vendor a carregarem)
           # --nokmi_symbol_list_strict_mode: não falha por conferência estrita da lista KMI
-          tools/bazel run \
+          # Compila só o kernel (sem o passo de instalar módulos, que não usamos:
+          # os módulos de vendor vêm da ROM do aparelho).
+          tools/bazel build \
             --lto=thin \
             --notrim \
             --nokmi_symbol_list_strict_mode \
-            //common:kernel_aarch64_dist -- --destdir=out/dist
-          ls -lh out/dist | head -30
+            --verbose_failures \
+            //common:kernel_aarch64
+          mkdir -p out/dist
+          IMG=$(find -L bazel-bin/common -name Image -path '*kernel_aarch64*' | head -n1)
+          echo "Image encontrada: $IMG"
+          test -n "$IMG" || { echo "::error::Image não encontrada em bazel-bin"; find -L bazel-bin/common -maxdepth 3 | head -50; exit 1; }
+          cp -L "$IMG" out/dist/Image
+          ls -lh out/dist
 
       - name: Empacotar AnyKernel3
         run: |
