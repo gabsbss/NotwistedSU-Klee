@@ -8,6 +8,159 @@ on:
     inputs:
       manifest_branch:
         description: "Branch do manifesto GKI (kernel/manifest)"
+        default: "common-android15-6.6-2025-09"
+      stock_commit:
+        description: "Commit do kernel stock (do uname -r: g<hash>)"
+        default: "8e4be6b47e40"
+      ksu_branch:
+        description: "Branch do KernelSU-Next (use next-susfs para SUSFS)"
+        default: "next-susfs"
+      susfs:
+        description: "Integrar SUSFS?"
+        type: boolean
+        default: true
+
+env:
+  # Sufixo exato do uname -r do aparelho, para os módulos de vendor carregarem (vermagic)
+  KERNEL_SUFFIX: "-android15-8-g8e4be6b47e40-ab14134548-4k"
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Liberar espaço em disco
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android /opt/hostedtoolcache/CodeQL
+          sudo apt-get clean
+          df -h /
+
+      - name: Swap extra (evita OOM no link com LTO)
+        run: |
+          sudo swapoff -a || true
+          sudo fallocate -l 16G /swapfile
+          sudo chmod 600 /swapfile
+          sudo mkswap /swapfile
+          sudo swapon /swapfile
+          free -h
+
+      - uses: actions/checkout@v4
+        with:
+          path: pack
+
+      - name: Dependências
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y git curl python3 zip unzip rsync libssl-dev bc flex bison
+          mkdir -p ~/bin
+          curl -s https://storage.googleapis.com/git-repo-downloads/repo > ~/bin/repo
+          chmod +x ~/bin/repo
+          echo "$HOME/bin" >> "$GITHUB_PATH"
+          git config --global user.name "notwisted"
+          git config --global user.email "notwisted@users.noreply.github.com"
+          git config --global color.ui false
+
+      - name: Baixar fonte GKI
+        run: |
+          mkdir -p ~/kernel && cd ~/kernel
+          # Sem --depth=1: precisamos do histórico para posicionar no commit exato do stock
+          repo init -u https://android.googlesource.com/kernel/manifest \
+            -b "${{ inputs.manifest_branch }}" --no-clone-bundle
+          repo sync -c -j4 --no-tags --no-clone-bundle --retry-fetches=3
+
+      - name: Conferir versão do kernel
+        run: |
+          cd ~/kernel/common
+          git log -1 --format='HEAD do branch: %h %s'
+          # Posiciona no commit exato do kernel stock (g<hash> do uname -r).
+          # Se ele não estiver neste branch, o build segue no HEAD com um aviso.
+          if git checkout "${{ inputs.stock_commit }}"; then
+            echo "OK: posicionado no commit do stock ${{ inputs.stock_commit }}"
+          else
+            echo "::warning::Commit ${{ inputs.stock_commit }} não encontrado neste branch; seguindo no HEAD do branch. Tente outro manifest_branch (ex.: common-android15-6.6-2025-10)."
+          fi
+          git log -1 --format='Compilando a partir de: %h %s'
+          grep -E '^(VERSION|PATCHLEVEL|SUBLEVEL) ' Makefile
+
+      - name: Integrar KernelSU-Next
+        run: |
+          cd ~/kernel/common
+          curl -LSs "https://raw.githubusercontent.com/rifsxd/KernelSU-Next/next/kernel/setup.sh" \
+            | bash -s "${{ inputs.ksu_branch }}"
+
+      - name: Aplicar SUSFS
+        if: ${{ inputs.susfs }}
+        run: |
+          cd ~/kernel
+          git clone --depth=1 -b gki-android15-6.6 https://gitlab.com/simonpunk/susfs4ksu.git susfs4ksu
+          cd common
+          cp ../susfs4ksu/kernel_patches/fs/* fs/
+          cp ../susfs4ksu/kernel_patches/include/linux/* include/linux/
+          patch -p1 < ../susfs4ksu/kernel_patches/50_add_susfs_in_gki-android15-6.6.patch
+
+      - name: Configurar defconfig
+        run: |
+          cd ~/kernel/common
+          {
+            echo "CONFIG_KSU=y"
+            echo "CONFIG_KPROBES=y"
+            echo "CONFIG_HAVE_KPROBES=y"
+            echo "CONFIG_KPROBE_EVENTS=y"
+          } >> arch/arm64/configs/gki_defconfig
+          if [ "${{ inputs.susfs }}" = "true" ]; then
+            {
+              echo "CONFIG_KSU_SUSFS=y"
+              echo "CONFIG_KSU_SUSFS_SUS_PATH=y"
+              echo "CONFIG_KSU_SUSFS_SUS_MOUNT=y"
+              echo "CONFIG_KSU_SUSFS_SUS_KSTAT=y"
+              echo "CONFIG_KSU_SUSFS_SPOOF_UNAME=y"
+              echo "CONFIG_KSU_SUSFS_OPEN_REDIRECT=y"
+              echo "CONFIG_KSU_SUSFS_SUS_MAP=y"
+            } >> arch/arm64/configs/gki_defconfig
+          fi
+
+      - name: Fixar a versão (uname) igual ao stock
+        run: |
+          cd ~/kernel/common
+          cat > scripts/setlocalversion <<EOF
+          #!/bin/sh
+          echo "${KERNEL_SUFFIX}"
+          EOF
+          chmod +x scripts/setlocalversion
+
+      - name: Compilar (Kleaf)
+        run: |
+          cd ~/kernel
+          # --lto=thin reduz o uso de memória; --nocheck_defconfig evita falha por defconfig alterado
+          tools/bazel run \
+            --lto=thin \
+            --nocheck_defconfig \
+            //common:kernel_aarch64_dist -- --destdir=out/dist
+          ls -lh out/dist | head -30
+
+      - name: Empacotar AnyKernel3
+        run: |
+          cd ~
+          git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git ak3
+          cd ak3
+          rm -rf .git .github README.md modules patch ramdisk
+          cp ~/pack/anykernel.sh .
+          cp ~/kernel/out/dist/Image .
+          zip -r9 ~/notwistedSU-klee-6.6.89.zip . -x "*.git*"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: notwistedSU-klee
+          path: ~/notwistedSU-klee-6.6.89.zip
+name: Build notwistedSU (klee, GKI android15-6.6)
+
+# Coloque este arquivo em .github/workflows/build.yml no seu repositório.
+# Coloque o anykernel.sh na raiz do repositório (ao lado da pasta .github).
+
+on:
+  workflow_dispatch:
+    inputs:
+      manifest_branch:
+        description: "Branch do manifesto GKI (kernel/manifest)"
         default: "common-android15-6.6-2025-05"
       stock_commit:
         description: "Commit do kernel stock (do uname -r: g<hash>)"
