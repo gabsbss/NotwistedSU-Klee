@@ -12,11 +12,8 @@ on:
       stock_commit:
         description: "Commit do kernel stock (do uname -r: g<hash>)"
         default: "8e4be6b47e40"
-      ksu_branch:
-        description: "Branch do KernelSU-Next (use next-susfs para SUSFS)"
-        default: "next-susfs"
       susfs:
-        description: "Integrar SUSFS?"
+        description: "Integrar SUSFS? (sim = KernelSU-Next pershoot/dev-susfs; não = KernelSU-Next oficial/dev)"
         type: boolean
         default: true
 
@@ -84,8 +81,17 @@ jobs:
       - name: Integrar KernelSU-Next
         run: |
           cd ~/kernel/common
-          curl -LSs "https://raw.githubusercontent.com/rifsxd/KernelSU-Next/next/kernel/setup.sh" \
-            | bash -s "${{ inputs.ksu_branch }}"
+          # Mesma coisa que o setup.sh do KernelSU-Next faz, passo a passo
+          if [ "${{ inputs.susfs }}" = "true" ]; then
+            git clone --depth=1 -b dev-susfs https://github.com/pershoot/KernelSU-Next.git KernelSU-Next
+          else
+            git clone --depth=1 -b dev https://github.com/KernelSU-Next/KernelSU-Next.git KernelSU-Next
+          fi
+          test -f KernelSU-Next/kernel/Kconfig || { echo "::error::KernelSU-Next não foi baixado direito"; exit 1; }
+          ln -sfn ../KernelSU-Next/kernel drivers/kernelsu
+          grep -q kernelsu drivers/Makefile || printf '\nobj-$(CONFIG_KSU) += kernelsu/\n' >> drivers/Makefile
+          grep -q 'drivers/kernelsu/Kconfig' drivers/Kconfig || sed -i '/endmenu/i source "drivers/kernelsu/Kconfig"' drivers/Kconfig
+          git -C KernelSU-Next log -1 --format='KernelSU-Next: %h %s'
 
       - name: Aplicar SUSFS
         if: ${{ inputs.susfs }}
