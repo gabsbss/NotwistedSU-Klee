@@ -106,12 +106,14 @@ jobs:
       - name: Configurar defconfig
         run: |
           cd ~/kernel/common
+          # As opções vão num arquivo "fragment" separado (em vez de alterar o gki_defconfig),
+          # porque o Kleaf confere se o gki_defconfig continua "minimizado".
           {
             echo "CONFIG_KSU=y"
             echo "CONFIG_KPROBES=y"
             echo "CONFIG_HAVE_KPROBES=y"
             echo "CONFIG_KPROBE_EVENTS=y"
-          } >> arch/arm64/configs/gki_defconfig
+          } > arch/arm64/configs/notwisted.fragment
           if [ "${{ inputs.susfs }}" = "true" ]; then
             {
               echo "CONFIG_KSU_SUSFS=y"
@@ -121,8 +123,15 @@ jobs:
               echo "CONFIG_KSU_SUSFS_SPOOF_UNAME=y"
               echo "CONFIG_KSU_SUSFS_OPEN_REDIRECT=y"
               echo "CONFIG_KSU_SUSFS_SUS_MAP=y"
-            } >> arch/arm64/configs/gki_defconfig
+            } >> arch/arm64/configs/notwisted.fragment
           fi
+          # Registra o fragment no alvo kernel_aarch64 do BUILD.bazel
+          sed -i '0,/"kernel_aarch64": {/s//"kernel_aarch64": {\n        "defconfig_fragments": ["arch\/arm64\/configs\/notwisted.fragment"],/' BUILD.bazel
+          # Em kernel GKI com módulos MediaTek de vendor, a lista de exports protegidos
+          # costuma impedir módulos (ex.: Wi-Fi) de carregarem; removemos a restrição.
+          sed -i '/protected_exports_list/d' BUILD.bazel
+          grep -n 'notwisted.fragment' BUILD.bazel
+          cat arch/arm64/configs/notwisted.fragment
 
       - name: Fixar a versão (uname) igual ao stock
         run: |
@@ -136,10 +145,13 @@ jobs:
       - name: Compilar (Kleaf)
         run: |
           cd ~/kernel
-          # --lto=thin reduz o uso de memória; --nocheck_defconfig evita falha por defconfig alterado
+          # --lto=thin: usa menos memória
+          # --notrim: não remove símbolos "não listados" (ajuda os módulos de vendor a carregarem)
+          # --nokmi_symbol_list_strict_mode: não falha por conferência estrita da lista KMI
           tools/bazel run \
             --lto=thin \
-            --nocheck_defconfig \
+            --notrim \
+            --nokmi_symbol_list_strict_mode \
             //common:kernel_aarch64_dist -- --destdir=out/dist
           ls -lh out/dist | head -30
 
